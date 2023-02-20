@@ -1,0 +1,111 @@
+ #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <pthread.h>
+
+#define MAX_CLIENTS 10
+#define BUFFER_SIZE 1024
+
+int client_sockets[MAX_CLIENTS];
+int num_clients = 0;
+pthread_mutex_t mutex;
+
+void *client_handler(void *socket_desc) {
+    int client_socket = *(int*)socket_desc;
+    char message[BUFFER_SIZE];
+
+    while (1) {
+        if (recv(client_socket, message, BUFFER_SIZE, 0) <= 0) {
+            break;
+        }
+
+        printf("Received message from client %d: %s\n", client_socket, message);
+
+        pthread_mutex_lock(&mutex);
+
+        for (int i = 0; i < num_clients; i++) {
+            if (client_sockets[i] != client_socket) {
+                send(client_sockets[i], message, strlen(message), 0);
+            }
+        }
+
+        pthread_mutex_unlock(&mutex);
+
+        memset(message, 0, BUFFER_SIZE);
+    }
+
+    pthread_mutex_lock(&mutex);
+
+    for (int i = 0; i < num_clients; i++) {
+        if (client_sockets[i] == client_socket) {
+            client_sockets[i] = 0;
+        }
+    }
+
+    pthread_mutex_unlock(&mutex);
+
+    close(client_socket);
+    pthread_exit(NULL);
+}
+
+int main(int argc, char *argv[]) {
+    int server_socket, client_socket, port;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t client_addr_size = sizeof(client_addr);
+    pthread_t thread_id;
+
+    if (argc != 2) {
+        printf("Usage: %s <port>\n", argv[0]);
+        return 1;
+    }
+
+    port = atoi(argv[1]);
+
+    if ((server_socket = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        printf("Error creating socket.\n");
+        return 1;
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(port);
+
+    if (bind(server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
+        printf("Error binding socket.\n");
+        return 1;
+    }
+
+    if (listen(server_socket, MAX_CLIENTS) == -1) {
+        printf("Error listening on socket.\n");
+        return 1;
+    }
+
+    printf("Server listening on port %d.\n", port);
+
+    while (1) {
+        if ((client_socket = accept(server_socket, (struct sockaddr*)&client_addr, &client_addr_size)) == -1) {
+            printf("Error accepting client connection.\n");
+            continue;
+        }
+
+        if (num_clients >= MAX_CLIENTS) {
+            printf("Maximum number of clients reached. Connection refused.\n");
+            close(client_socket);
+            continue;
+        }
+
+        client_sockets[num_clients++] = client_socket;
+
+        printf("Client %d connected.\n", client_socket);
+
+        if (pthread_create(&thread_id, NULL, client_handler, (void*)&client_socket) != 0) {
+            printf("Error creating client thread.\n");
+            break;
+        }
+    }
+
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (client_sockets[i] !=
